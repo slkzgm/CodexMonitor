@@ -53,6 +53,7 @@ printf '{\"id\":3,\"method\":\"list_workspaces\",\"params\":{}}\\n' | nc -w 1 12
 - `list_workspaces`
 - `add_workspace` (`{ path, codex_bin? }`)
 - `connect_workspace` (`{ id }`)
+- `list_workspace_files` (`{ workspaceId }`)
 - `get_app_settings`
 - `update_app_settings` (`{ settings }`)
 - `start_thread` (`{ workspaceId }`)
@@ -66,4 +67,3 @@ printf '{\"id\":3,\"method\":\"list_workspaces\",\"params\":{}}\\n' | nc -w 1 12
 - `account_rate_limits` (`{ workspaceId }`)
 - `skills_list` (`{ workspaceId }`)
 - `respond_to_server_request` (`{ workspaceId, requestId, result }`)
-
