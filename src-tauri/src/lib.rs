@@ -6,6 +6,7 @@ mod codex;
 mod event_sink;
 mod git;
 mod prompts;
+mod remote_backend;
 mod settings;
 mod state;
 mod terminal;
