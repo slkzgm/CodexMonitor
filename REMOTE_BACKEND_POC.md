@@ -72,3 +72,11 @@ printf '{\"id\":3,\"method\":\"list_workspaces\",\"params\":{}}\\n' | nc -w 1 12
 - `account_rate_limits` (`{ workspaceId }`)
 - `skills_list` (`{ workspaceId }`)
 - `respond_to_server_request` (`{ workspaceId, requestId, result }`)
+- `get_git_status` (`{ workspaceId }`)
+- `get_git_diffs` (`{ workspaceId }`)
+- `get_git_log` (`{ workspaceId, limit? }`)
+- `get_git_remote` (`{ workspaceId }`)
+- `get_github_issues` (`{ workspaceId }`) *(requires `gh` installed on the daemon machine)*
+- `list_git_branches` (`{ workspaceId }`)
+- `checkout_git_branch` (`{ workspaceId, name }`)
+- `create_git_branch` (`{ workspaceId, name }`)
