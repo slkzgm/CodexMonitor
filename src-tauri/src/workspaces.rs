@@ -201,6 +201,7 @@ pub(crate) async fn add_workspace(
     app: AppHandle,
 ) -> Result<WorkspaceInfo, String> {
     if remote_backend::is_remote_mode(&*state).await {
+        let path = remote_backend::normalize_path_for_remote(path);
         let response = remote_backend::call_remote(
             &*state,
             app,
@@ -264,6 +265,17 @@ pub(crate) async fn add_worktree(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<WorkspaceInfo, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "add_worktree",
+            json!({ "parentId": parent_id, "branch": branch }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|err| err.to_string());
+    }
+
     let branch = branch.trim();
     if branch.is_empty() {
         return Err("Branch name is required.".to_string());
@@ -352,7 +364,13 @@ pub(crate) async fn add_worktree(
 pub(crate) async fn remove_workspace(
     id: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        remote_backend::call_remote(&*state, app, "remove_workspace", json!({ "id": id })).await?;
+        return Ok(());
+    }
+
     let (entry, child_worktrees) = {
         let workspaces = state.workspaces.lock().await;
         let entry = workspaces
@@ -409,7 +427,13 @@ pub(crate) async fn remove_workspace(
 pub(crate) async fn remove_worktree(
     id: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        remote_backend::call_remote(&*state, app, "remove_worktree", json!({ "id": id })).await?;
+        return Ok(());
+    }
+
     let (entry, parent) = {
         let workspaces = state.workspaces.lock().await;
         let entry = workspaces
@@ -461,7 +485,19 @@ pub(crate) async fn update_workspace_settings(
     id: String,
     settings: WorkspaceSettings,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<WorkspaceInfo, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "update_workspace_settings",
+            json!({ "id": id, "settings": settings }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|err| err.to_string());
+    }
+
     let (entry_snapshot, list) = {
         let mut workspaces = state.workspaces.lock().await;
         let entry_snapshot = match workspaces.get_mut(&id) {
@@ -495,7 +531,19 @@ pub(crate) async fn update_workspace_codex_bin(
     id: String,
     codex_bin: Option<String>,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<WorkspaceInfo, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "update_workspace_codex_bin",
+            json!({ "id": id, "codex_bin": codex_bin }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|err| err.to_string());
+    }
+
     let (entry_snapshot, list) = {
         let mut workspaces = state.workspaces.lock().await;
         let entry_snapshot = match workspaces.get_mut(&id) {
