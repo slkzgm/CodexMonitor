@@ -1,8 +1,9 @@
 use git2::{BranchType, DiffOptions, Repository, Sort, Status, StatusOptions, Tree};
 use serde_json::json;
-use tauri::State;
+use tauri::{AppHandle, State};
 use tokio::process::Command;
 
+use crate::remote_backend;
 use crate::state::AppState;
 use crate::types::{
     BranchInfo, GitFileDiff, GitFileStatus, GitHubIssue, GitHubIssuesResponse, GitLogEntry,
@@ -100,7 +101,18 @@ fn parse_github_repo(remote_url: &str) -> Option<String> {
 pub(crate) async fn get_git_status(
     workspace_id: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<serde_json::Value, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        return remote_backend::call_remote(
+            &*state,
+            app,
+            "get_git_status",
+            json!({ "workspaceId": workspace_id }),
+        )
+        .await;
+    }
+
     let workspaces = state.workspaces.lock().await;
     let entry = workspaces
         .get(&workspace_id)
@@ -198,7 +210,19 @@ pub(crate) async fn get_git_status(
 pub(crate) async fn get_git_diffs(
     workspace_id: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<Vec<GitFileDiff>, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "get_git_diffs",
+            json!({ "workspaceId": workspace_id }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|err| err.to_string());
+    }
+
     let workspaces = state.workspaces.lock().await;
     let entry = workspaces
         .get(&workspace_id)
@@ -263,7 +287,19 @@ pub(crate) async fn get_git_log(
     workspace_id: String,
     limit: Option<usize>,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<GitLogResponse, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "get_git_log",
+            json!({ "workspaceId": workspace_id, "limit": limit }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|err| err.to_string());
+    }
+
     let workspaces = state.workspaces.lock().await;
     let entry = workspaces
         .get(&workspace_id)
@@ -369,7 +405,19 @@ pub(crate) async fn get_git_log(
 pub(crate) async fn get_git_remote(
     workspace_id: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<Option<String>, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "get_git_remote",
+            json!({ "workspaceId": workspace_id }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|err| err.to_string());
+    }
+
     let workspaces = state.workspaces.lock().await;
     let entry = workspaces
         .get(&workspace_id)
@@ -399,7 +447,19 @@ pub(crate) async fn get_git_remote(
 pub(crate) async fn get_github_issues(
     workspace_id: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<GitHubIssuesResponse, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "get_github_issues",
+            json!({ "workspaceId": workspace_id }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|err| err.to_string());
+    }
+
     let workspaces = state.workspaces.lock().await;
     let entry = workspaces
         .get(&workspace_id)
@@ -489,7 +549,18 @@ pub(crate) async fn get_github_issues(
 pub(crate) async fn list_git_branches(
     workspace_id: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<serde_json::Value, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        return remote_backend::call_remote(
+            &*state,
+            app,
+            "list_git_branches",
+            json!({ "workspaceId": workspace_id }),
+        )
+        .await;
+    }
+
     let workspaces = state.workspaces.lock().await;
     let entry = workspaces
         .get(&workspace_id)
@@ -523,7 +594,19 @@ pub(crate) async fn checkout_git_branch(
     workspace_id: String,
     name: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let _ = remote_backend::call_remote(
+            &*state,
+            app,
+            "checkout_git_branch",
+            json!({ "workspaceId": workspace_id, "name": name }),
+        )
+        .await?;
+        return Ok(());
+    }
+
     let workspaces = state.workspaces.lock().await;
     let entry = workspaces
         .get(&workspace_id)
@@ -538,7 +621,19 @@ pub(crate) async fn create_git_branch(
     workspace_id: String,
     name: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let _ = remote_backend::call_remote(
+            &*state,
+            app,
+            "create_git_branch",
+            json!({ "workspaceId": workspace_id, "name": name }),
+        )
+        .await?;
+        return Ok(());
+    }
+
     let workspaces = state.workspaces.lock().await;
     let entry = workspaces
         .get(&workspace_id)
