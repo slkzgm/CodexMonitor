@@ -1,0 +1,37 @@
+name: Build (Windows debug)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows-debug:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tauri debug build (no bundle)
+        run: npm run tauri -- build --debug --no-bundle
+
+      - name: Upload app binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexMonitor-windows-debug
+          path: |
+            src-tauri/target/debug/codex-monitor.exe
+            src-tauri/target/debug/codex-monitor.pdb
