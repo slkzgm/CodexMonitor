@@ -12,6 +12,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use ignore::WalkBuilder;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex};
@@ -203,6 +204,19 @@ impl DaemonState {
             .ok_or("workspace not connected".to_string())
     }
 
+    async fn list_workspace_files(&self, workspace_id: String) -> Result<Vec<String>, String> {
+        let entry = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or("workspace not found")?
+        };
+
+        let root = PathBuf::from(entry.path);
+        Ok(list_workspace_files_inner(&root, 20000))
+    }
+
     async fn start_thread(&self, workspace_id: String) -> Result<Value, String> {
         let session = self.get_session(&workspace_id).await?;
         let params = json!({
@@ -251,15 +265,62 @@ impl DaemonState {
         images: Option<Vec<String>>,
     ) -> Result<Value, String> {
         let session = self.get_session(&workspace_id).await?;
+        let access_mode = access_mode.unwrap_or_else(|| "current".to_string());
+        let sandbox_policy = match access_mode.as_str() {
+            "full-access" => json!({
+                "type": "dangerFullAccess"
+            }),
+            "read-only" => json!({
+                "type": "readOnly"
+            }),
+            _ => json!({
+                "type": "workspaceWrite",
+                "writableRoots": [session.entry.path],
+                "networkAccess": true
+            }),
+        };
+
+        let approval_policy = if access_mode == "full-access" {
+            "never"
+        } else {
+            "on-request"
+        };
+
+        let trimmed_text = text.trim();
+        let mut input: Vec<Value> = Vec::new();
+        if !trimmed_text.is_empty() {
+            input.push(json!({ "type": "text", "text": trimmed_text }));
+        }
+        if let Some(paths) = images {
+            for path in paths {
+                let trimmed = path.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed.starts_with("data:")
+                    || trimmed.starts_with("http://")
+                    || trimmed.starts_with("https://")
+                {
+                    input.push(json!({ "type": "image", "url": trimmed }));
+                } else {
+                    input.push(json!({ "type": "localImage", "path": trimmed }));
+                }
+            }
+        }
+        if input.is_empty() {
+            return Err("empty user message".to_string());
+        }
+
         let params = json!({
             "threadId": thread_id,
-            "message": text,
+            "input": input,
+            "cwd": session.entry.path,
+            "approvalPolicy": approval_policy,
+            "sandboxPolicy": sandbox_policy,
             "model": model,
             "effort": effort,
-            "approvalPolicy": access_mode,
-            "images": images
         });
-        session.send_request("thread/user_message", params).await
+        session.send_request("turn/start", params).await
     }
 
     async fn turn_interrupt(
@@ -273,8 +334,7 @@ impl DaemonState {
             "threadId": thread_id,
             "turnId": turn_id
         });
-        session.send_notification("turn/interrupt", Some(params)).await?;
-        Ok(json!({ "ok": true }))
+        session.send_request("turn/interrupt", params).await
     }
 
     async fn start_review(
@@ -303,12 +363,17 @@ impl DaemonState {
 
     async fn account_rate_limits(&self, workspace_id: String) -> Result<Value, String> {
         let session = self.get_session(&workspace_id).await?;
-        session.send_request("account/rate_limits", json!({})).await
+        session
+            .send_request("account/rateLimits/read", Value::Null)
+            .await
     }
 
     async fn skills_list(&self, workspace_id: String) -> Result<Value, String> {
         let session = self.get_session(&workspace_id).await?;
-        session.send_request("skills/list", json!({})).await
+        let params = json!({
+            "cwd": session.entry.path
+        });
+        session.send_request("skills/list", params).await
     }
 
     async fn respond_to_server_request(
@@ -332,6 +397,58 @@ fn sort_workspaces(workspaces: &mut [WorkspaceInfo]) {
         }
         a.name.cmp(&b.name)
     });
+}
+
+fn should_skip_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | "node_modules" | "dist" | "target" | "release-artifacts"
+    )
+}
+
+fn normalize_git_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn list_workspace_files_inner(root: &PathBuf, max_files: usize) -> Vec<String> {
+    let mut results = Vec::new();
+    let walker = WalkBuilder::new(root)
+        .hidden(false)
+        .follow_links(false)
+        .require_git(false)
+        .filter_entry(|entry| {
+            if entry.depth() == 0 {
+                return true;
+            }
+            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                let name = entry.file_name().to_string_lossy();
+                return !should_skip_dir(&name);
+            }
+            true
+        })
+        .build();
+
+    for entry in walker {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        if let Ok(rel_path) = entry.path().strip_prefix(root) {
+            let normalized = normalize_git_path(&rel_path.to_string_lossy());
+            if !normalized.is_empty() {
+                results.push(normalized);
+            }
+        }
+        if results.len() >= max_files {
+            break;
+        }
+    }
+
+    results.sort();
+    results
 }
 
 fn default_data_dir() -> PathBuf {
@@ -535,6 +652,11 @@ async fn handle_rpc_request(
             state.connect_workspace(id, client_version).await?;
             Ok(json!({ "ok": true }))
         }
+        "list_workspace_files" => {
+            let workspace_id = parse_string(&params, "workspaceId")?;
+            let files = state.list_workspace_files(workspace_id).await?;
+            serde_json::to_value(files).map_err(|err| err.to_string())
+        }
         "get_app_settings" => {
             let settings = state.app_settings.lock().await;
             serde_json::to_value(settings.clone()).map_err(|err| err.to_string())
@@ -649,6 +771,21 @@ async fn handle_client(
 
     let mut authenticated = config.token.is_none();
     let mut events_task: Option<tokio::task::JoinHandle<()>> = None;
+
+    if authenticated {
+        let mut rx = events.subscribe();
+        let out_tx_events = out_tx.clone();
+        events_task = Some(tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                let Some(payload) = build_event_notification(event) else {
+                    continue;
+                };
+                if out_tx_events.send(payload).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
 
     while let Ok(Some(line)) = lines.next_line().await {
         let line = line.trim();
