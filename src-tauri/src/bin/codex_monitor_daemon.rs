@@ -126,11 +126,13 @@ impl DaemonState {
             settings.codex_bin.clone()
         };
 
+        let codex_home = resolve_codex_home(&entry, None);
         let session = spawn_workspace_session(
             entry.clone(),
             default_bin,
             client_version,
             self.event_sink.clone(),
+            codex_home,
         )
         .await?;
 
@@ -177,11 +179,23 @@ impl DaemonState {
             settings.codex_bin.clone()
         };
 
+        let parent_path = if entry.kind.is_worktree() {
+            let workspaces = self.workspaces.lock().await;
+            entry
+                .parent_id
+                .as_deref()
+                .and_then(|parent_id| workspaces.get(parent_id))
+                .map(|parent| parent.path.clone())
+        } else {
+            None
+        };
+        let codex_home = resolve_codex_home(&entry, parent_path.as_deref());
         let session = spawn_workspace_session(
             entry,
             default_bin,
             client_version,
             self.event_sink.clone(),
+            codex_home,
         )
         .await?;
 
@@ -397,6 +411,22 @@ fn sort_workspaces(workspaces: &mut [WorkspaceInfo]) {
         }
         a.name.cmp(&b.name)
     });
+}
+
+fn resolve_codex_home(entry: &WorkspaceEntry, parent_path: Option<&str>) -> Option<PathBuf> {
+    if entry.kind.is_worktree() {
+        if let Some(parent_path) = parent_path {
+            let legacy_home = PathBuf::from(parent_path).join(".codexmonitor");
+            if legacy_home.is_dir() {
+                return Some(legacy_home);
+            }
+        }
+    }
+    let legacy_home = PathBuf::from(&entry.path).join(".codexmonitor");
+    if legacy_home.is_dir() {
+        return Some(legacy_home);
+    }
+    None
 }
 
 fn should_skip_dir(name: &str) -> bool {
