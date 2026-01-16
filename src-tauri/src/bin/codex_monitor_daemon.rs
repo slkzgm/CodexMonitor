@@ -748,6 +748,27 @@ async fn handle_rpc_request(
     }
 }
 
+async fn forward_events(
+    mut rx: broadcast::Receiver<DaemonEvent>,
+    out_tx_events: mpsc::UnboundedSender<String>,
+) {
+    loop {
+        let event = match rx.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => break,
+        };
+
+        let Some(payload) = build_event_notification(event) else {
+            continue;
+        };
+
+        if out_tx_events.send(payload).is_err() {
+            break;
+        }
+    }
+}
+
 async fn handle_client(
     socket: TcpStream,
     config: Arc<DaemonConfig>,
@@ -773,18 +794,9 @@ async fn handle_client(
     let mut events_task: Option<tokio::task::JoinHandle<()>> = None;
 
     if authenticated {
-        let mut rx = events.subscribe();
+        let rx = events.subscribe();
         let out_tx_events = out_tx.clone();
-        events_task = Some(tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                let Some(payload) = build_event_notification(event) else {
-                    continue;
-                };
-                if out_tx_events.send(payload).is_err() {
-                    break;
-                }
-            }
-        }));
+        events_task = Some(tokio::spawn(forward_events(rx, out_tx_events)));
     }
 
     while let Ok(Some(line)) = lines.next_line().await {
@@ -828,18 +840,9 @@ async fn handle_client(
                 let _ = out_tx.send(response);
             }
 
-            let mut rx = events.subscribe();
+            let rx = events.subscribe();
             let out_tx_events = out_tx.clone();
-            events_task = Some(tokio::spawn(async move {
-                while let Ok(event) = rx.recv().await {
-                    let Some(payload) = build_event_notification(event) else {
-                        continue;
-                    };
-                    if out_tx_events.send(payload).is_err() {
-                        break;
-                    }
-                }
-            }));
+            events_task = Some(tokio::spawn(forward_events(rx, out_tx_events)));
 
             continue;
         }
