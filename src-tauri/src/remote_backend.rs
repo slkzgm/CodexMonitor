@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter};
@@ -25,10 +25,15 @@ struct RemoteBackendInner {
     out_tx: mpsc::UnboundedSender<String>,
     pending: Arc<Mutex<PendingMap>>,
     next_id: AtomicU64,
+    connected: Arc<AtomicBool>,
 }
 
 impl RemoteBackend {
     pub(crate) async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+        if !self.inner.connected.load(Ordering::SeqCst) {
+            return Err(DISCONNECTED_MESSAGE.to_string());
+        }
+
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.inner.pending.lock().await.insert(id, tx);
@@ -39,10 +44,10 @@ impl RemoteBackend {
             "params": params,
         });
         let message = serde_json::to_string(&request).map_err(|err| err.to_string())?;
-        self.inner
-            .out_tx
-            .send(message)
-            .map_err(|_| DISCONNECTED_MESSAGE.to_string())?;
+        if self.inner.out_tx.send(message).is_err() {
+            self.inner.pending.lock().await.remove(&id);
+            return Err(DISCONNECTED_MESSAGE.to_string());
+        }
 
         rx.await
             .map_err(|_| DISCONNECTED_MESSAGE.to_string())?
@@ -98,22 +103,38 @@ async fn ensure_remote_backend(state: &AppState, app: AppHandle) -> Result<Remot
     let (reader, mut writer) = stream.into_split();
 
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+    let pending = Arc::new(Mutex::new(PendingMap::new()));
+    let pending_for_writer = Arc::clone(&pending);
+    let pending_for_reader = Arc::clone(&pending);
+
+    let connected = Arc::new(AtomicBool::new(true));
+    let connected_for_writer = Arc::clone(&connected);
+    let connected_for_reader = Arc::clone(&connected);
+
     let write_task = tokio::spawn(async move {
         while let Some(message) = out_rx.recv().await {
-            if writer.write_all(message.as_bytes()).await.is_err() {
-                break;
-            }
-            if writer.write_all(b"\n").await.is_err() {
+            if writer.write_all(message.as_bytes()).await.is_err()
+                || writer.write_all(b"\n").await.is_err()
+            {
+                connected_for_writer.store(false, Ordering::SeqCst);
+                let mut pending = pending_for_writer.lock().await;
+                for (_, sender) in pending.drain() {
+                    let _ = sender.send(Err(DISCONNECTED_MESSAGE.to_string()));
+                }
                 break;
             }
         }
     });
 
-    let pending = Arc::new(Mutex::new(PendingMap::new()));
-    let pending_for_reader = Arc::clone(&pending);
     let app_for_reader = app.clone();
     let read_task = tokio::spawn(async move {
-        read_loop(app_for_reader, reader, pending_for_reader).await;
+        read_loop(
+            app_for_reader,
+            reader,
+            pending_for_reader,
+            connected_for_reader,
+        )
+        .await;
     });
 
     let client = RemoteBackend {
@@ -121,6 +142,7 @@ async fn ensure_remote_backend(state: &AppState, app: AppHandle) -> Result<Remot
             out_tx,
             pending,
             next_id: AtomicU64::new(1),
+            connected,
         }),
     };
 
@@ -141,7 +163,12 @@ async fn ensure_remote_backend(state: &AppState, app: AppHandle) -> Result<Remot
     Ok(client)
 }
 
-async fn read_loop(app: AppHandle, reader: tokio::net::tcp::OwnedReadHalf, pending: Arc<Mutex<PendingMap>>) {
+async fn read_loop(
+    app: AppHandle,
+    reader: tokio::net::tcp::OwnedReadHalf,
+    pending: Arc<Mutex<PendingMap>>,
+    connected: Arc<AtomicBool>,
+) {
     let mut lines = BufReader::new(reader).lines();
 
     while let Ok(Some(line)) = lines.next_line().await {
@@ -194,6 +221,7 @@ async fn read_loop(app: AppHandle, reader: tokio::net::tcp::OwnedReadHalf, pendi
         }
     }
 
+    connected.store(false, Ordering::SeqCst);
     let mut pending = pending.lock().await;
     for (_, sender) in pending.drain() {
         let _ = sender.send(Err(DISCONNECTED_MESSAGE.to_string()));
